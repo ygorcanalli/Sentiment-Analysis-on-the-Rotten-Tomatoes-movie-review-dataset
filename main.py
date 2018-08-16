@@ -8,7 +8,22 @@ import sys
 import operator
 from collections import Counter
 from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.ensemble import RandomForestClassifier
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+import torch.backends.cudnn as cudnn
+
+import torchvision
+import torchvision.transforms as transforms
+
+import os
+import argparse
+
+from custom import *
+from utils import progress_bar
+from torch.autograd import Variable
+
 
 class Tree:
 
@@ -199,6 +214,81 @@ def run_random_forest(train_vectors, train_results, test_vectors, test_results, 
     predicted_results = forest.predict(test_vectors)
     return compute_accuracy(test_results, predicted_results)
 
+# Training
+def train(trainloader, epoch):
+    print('\nEpoch: %d' % epoch)
+    net.train()
+    train_loss = 0
+    correct = 0
+    total = 0
+    for batch_idx, (inputs, targets) in enumerate(trainloader):
+        if use_cuda:
+            inputs, targets = inputs.cuda(), targets.cuda()
+        optimizer.zero_grad()
+        inputs, targets = Variable(inputs), Variable(targets)
+        outputs = net(inputs)
+        loss = criterion(outputs, targets)
+        loss.backward()
+        optimizer.step()
+
+        train_loss += loss.data[0]
+        _, predicted = torch.max(outputs.data, 1)
+        total += targets.size(0)
+        correct += predicted.eq(targets.data).cpu().sum()
+
+        progress_bar(batch_idx, len(trainloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
+            % (train_loss/(batch_idx+1), 100.*correct/total, correct, total))
+
+def test(testloader, epoch):
+    global best_acc
+    net.eval()
+    test_loss = 0
+    correct = 0
+    total = 0
+    for batch_idx, (inputs, targets) in enumerate(testloader):
+        if use_cuda:
+            inputs, targets = inputs.cuda(), targets.cuda()
+        inputs, targets = Variable(inputs, volatile=True), Variable(targets)
+        outputs = net(inputs)
+        loss = criterion(outputs, targets)
+
+        test_loss += loss.data[0]
+        _, predicted = torch.max(outputs.data, 1)
+        total += targets.size(0)
+        correct += predicted.eq(targets.data).cpu().sum()
+
+        progress_bar(batch_idx, len(testloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
+            % (test_loss/(batch_idx+1), 100.*correct/total, correct, total))
+
+    # Save checkpoint.
+    acc = 100.*correct/total
+    if acc > best_acc:
+        print('Saving..')
+        state = {
+            'net': net.module if use_cuda else net,
+            'acc': acc,
+            'epoch': epoch,
+        }
+        if not os.path.isdir('checkpoint'):
+            os.mkdir('checkpoint')
+        torch.save(state, './checkpoint/ckpt.t7')
+        best_acc = acc
+
+def run_mlp_net(trainloader, testloader)
+    net = MLPNet(3*32*32, 10, [512,1024,1024,800])
+
+    if use_cuda:
+        net.cuda()
+        net = torch.nn.DataParallel(net, device_ids=range(torch.cuda.device_count()))
+        cudnn.benchmark = True
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
+
+    for epoch in range(start_epoch, start_epoch+200):
+        train(trainloader, epoch)
+        test(testloader, epoch)
+
 def run_simulation():
     print("Loading training data..."),
     sys.stdout.flush()
@@ -219,7 +309,15 @@ def run_simulation():
             test_feature_vectors = create_feature_vectors(testdata['phrases'], dictionary, testdata["depth"], max_words=i)
             #print len(train_feature_vectors[1])
             #print len(test_feature_vectors[1])
-            res = run_random_forest(train_feature_vectors, traindata['sentiments'], test_feature_vectors, testdata["sentiments"], j)
+            traindataset = torch.util.data.TensorDataset(train_feature_vector,
+                                                         traindata['sentiments'])
+            testdataset = torch.util.data.TensorDataset(test_feature_vectors,
+                                                        testdata['sentiments'])
+            trainloader = torch.utils.data.DataLoader(traindataset, batch_size=128, shuffle=True, num_workers=2)
+
+            testloader = torch.utils.data.DataLoader(testdataset, batch_size=100, shuffle=False, num_workers=2)
+
+           res = run_mlp_net(trainloader, testloader)
             print("(Dictionary words: {} \t Random Forest: {} \t Accuracy: {})".format(i,j,res))
             sys.stdout.flush()
 
